@@ -1,0 +1,11 @@
+aiogram==3.23.0
+python-dotenv==1.0.0
+loguru==0.7.2
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+openpyxl==3.1.2
+aiohttp==3.9.0
+playwright==1.40.0
+Pillow==10.1.0
+pytz==2024.1
+
