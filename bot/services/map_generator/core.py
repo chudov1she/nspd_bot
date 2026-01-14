@@ -1,6 +1,7 @@
 """
 Основной класс генератора карт с инициализацией браузера.
 """
+import os
 from pathlib import Path
 from typing import Optional
 from loguru import logger
@@ -34,11 +35,23 @@ class MapGenerator:
     async def _init_browser(self):
         """Инициализирует браузер Playwright."""
         try:
+            import platform
             from playwright.async_api import async_playwright
+            
+            # Проверка DISPLAY на Linux (headless=False требует графический интерфейс)
+            if platform.system() == "Linux" and not os.getenv("DISPLAY"):
+                logger.warning(
+                    "⚠️ DISPLAY не установлен! Браузеру нужен графический интерфейс.\n"
+                    "Для Linux сервера используйте Xvfb:\n"
+                    "  1. Установите: sudo apt-get install -y xvfb\n"
+                    "  2. Запустите: xvfb-run -a python run.py\n"
+                    "Или настройте systemd с Xvfb (см. README)"
+                )
             
             if self._browser is None:
                 playwright = await async_playwright().start()
                 # Используем Chrome (рекомендуется сайтом nspd.gov.ru)
+                # headless=False - требуется графический интерфейс (Xvfb на Linux серверах)
                 self._browser = await playwright.chromium.launch(
                     headless=False,
                     channel="chrome"  # Используем установленный Chrome, если есть
