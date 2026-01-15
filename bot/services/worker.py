@@ -254,6 +254,60 @@ class TaskWorker:
         
         return results
     
+    async def _close_browser_after_lk(self):
+        """
+        Закрывает браузер после работы с личным кабинетом Росреестра.
+        Это гарантирует, что для генерации карт будет создан новый экземпляр браузера.
+        """
+        try:
+            from bot.services.browser_manager import close_browser_manager
+            from bot.services.rosreestr_lk import get_lk_client
+            
+            logger.debug("Закрытие браузера после работы с ЛК...")
+            
+            # Закрываем контекст ЛК клиента
+            try:
+                lk_client = get_lk_client()
+                if lk_client._context is not None:
+                    await lk_client.close()
+                    logger.debug("Контекст RosreestrLKClient закрыт")
+            except Exception as e:
+                logger.debug(f"Ошибка при закрытии RosreestrLKClient: {e}")
+            
+            # Закрываем общий браузер (это также сбросит singleton)
+            await close_browser_manager()
+            logger.info("Браузер закрыт после работы с ЛК, для генерации карт будет создан новый экземпляр")
+            
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии браузера после ЛК: {e}")
+    
+    async def _close_browser_after_maps(self):
+        """
+        Закрывает браузер после генерации карт.
+        Это гарантирует, что следующая задача начнет с чистого состояния.
+        """
+        try:
+            from bot.services.browser_manager import close_browser_manager
+            from bot.services.map_generator import get_map_generator
+            
+            logger.debug("Закрытие браузера после генерации карт...")
+            
+            # Закрываем контекст генератора карт
+            try:
+                map_generator = get_map_generator()
+                if map_generator._context is not None:
+                    await map_generator.close()
+                    logger.debug("Контекст MapGenerator закрыт")
+            except Exception as e:
+                logger.debug(f"Ошибка при закрытии MapGenerator: {e}")
+            
+            # Закрываем общий браузер (это также сбросит singleton)
+            await close_browser_manager()
+            logger.info("Браузер закрыт после генерации карт, следующая задача создаст новый экземпляр")
+            
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии браузера после генерации карт: {e}")
+    
     async def _close_browser_after_task(self):
         """
         Закрывает браузер после завершения задачи.
@@ -677,6 +731,10 @@ class TaskWorker:
         except Exception as e:
             logger.error(f"[Задача {task_id}] Критическая ошибка при дополнении из ЛК: {e}", exc_info=True)
             # Возвращаем исходные результаты без дополнения
+        finally:
+            # ВАЖНО: Закрываем браузер после работы с ЛК
+            # Это гарантирует, что для генерации карт будет создан новый экземпляр
+            await self._close_browser_after_lk()
         
         return results
     
@@ -894,6 +952,10 @@ class TaskWorker:
                     
         except Exception as e:
             logger.error(f"Ошибка при обработке задач генерации карт: {e}", exc_info=True)
+        finally:
+            # ВАЖНО: Закрываем браузер после генерации карт
+            # Это гарантирует, что следующая задача начнет с чистого состояния
+            await self._close_browser_after_maps()
     
     async def _process_results(
         self,
