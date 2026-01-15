@@ -20,7 +20,10 @@ class NavigationHandler:
     async def open_map_page(self):
         """Открывает главную страницу карты."""
         logger.debug(f"Открываем страницу: {self.NSPD_MAP_URL}")
-        await self._page.goto(self.NSPD_MAP_URL, wait_until="networkidle", timeout=30000)
+        # Увеличиваем таймаут для серверов (60 секунд)
+        await self._page.goto(self.NSPD_MAP_URL, wait_until="networkidle", timeout=60000)
+        # Дополнительное ожидание для полной загрузки страницы на сервере
+        await asyncio.sleep(2)
         await self._close_modal_if_exists()
     
     async def _close_modal_if_exists(self):
@@ -49,24 +52,29 @@ class NavigationHandler:
         """
         logger.debug("Ищем поле поиска...")
         try:
-            # Ждем появления поля поиска
+            # Увеличиваем таймаут для серверов (30 секунд вместо 10)
+            # На серверах страница может загружаться медленнее
             search_input = await self._page.wait_for_selector(
                 ".input-label input, label.input-label input, m-search-field input, form input[placeholder]",
-                timeout=10000
+                timeout=30000  # Увеличено с 10000 до 30000 (30 секунд)
             )
             
             if search_input:
+                # Дополнительное ожидание для полной загрузки элемента
+                await asyncio.sleep(1)
+                
                 # Кликаем на поле и очищаем его
                 await search_input.click()
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)  # Увеличено с 0.3 до 0.5
+                
                 # Очищаем поле (Ctrl+A и Delete)
                 await search_input.press("Control+a")
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)  # Увеличено с 0.2 до 0.3
                 
-                # Вводим кадастровый номер
-                await search_input.type(cadastral_number, delay=50)
+                # Вводим кадастровый номер с задержкой
+                await search_input.type(cadastral_number, delay=100)  # Увеличено с 50 до 100
                 logger.debug(f"Введен кадастровый номер: {cadastral_number}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(1.5)  # Увеличено с 1 до 1.5
                 
                 # Ищем и нажимаем кнопку поиска
                 await self._click_search_button(search_input)

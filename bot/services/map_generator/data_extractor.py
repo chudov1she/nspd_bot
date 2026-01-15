@@ -26,9 +26,10 @@ class MapDataExtractor:
         """
         try:
             # Ждем появления панели с информацией
+            # Увеличиваем таймаут для серверов (30 секунд вместо 10)
             await self._page.wait_for_selector(
                 "#tabpanel-info, div[role='tabpanel']",
-                timeout=10000
+                timeout=30000
             )
             
             # Даем время на загрузку всех данных
