@@ -28,6 +28,17 @@ from bot.services.map_generator import (
     MapGeneratorService,
     MapGeneratorError,
 )
+from bot.services.rosreestr_lk import (
+    get_lk_client,
+    close_lk_client,
+    RosreestrLKClient,
+    RosreestrLKError,
+)
+from bot.services.browser_manager import (
+    get_browser_manager,
+    close_browser_manager,
+    BrowserManager,
+)
 from bot.services.map_task_service import (
     create_map_task,
     get_pending_map_tasks,
@@ -67,5 +78,12 @@ __all__ = [
     "get_map_task_by_id",
     "get_map_task_by_cadastral",
     "get_user_map_tasks",
+    "get_lk_client",
+    "close_lk_client",
+    "RosreestrLKClient",
+    "RosreestrLKError",
+    "get_browser_manager",
+    "close_browser_manager",
+    "BrowserManager",
 ]
 

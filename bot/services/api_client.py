@@ -4,6 +4,7 @@ API клиент для работы с Росреестром через api-cl
 import aiohttp
 import asyncio
 import random
+from datetime import datetime
 from urllib.parse import urlencode
 from typing import List, Optional, Dict, Any
 from loguru import logger
@@ -379,7 +380,7 @@ class RosreestrAPIClient:
             except (ValueError, TypeError):
                 pass
         
-        # Парсим права
+        # Парсим права - формируем полный текст (вид + номер + дата)
         rights_list = object_data.get("rights", [])
         rights_text = None
         if rights_list:
@@ -387,16 +388,40 @@ class RosreestrAPIClient:
             for right in rights_list:
                 if isinstance(right, dict):
                     right_type = right.get("rightTypeDesc", "")
+                    right_number = right.get("rightNumber", "")
+                    right_reg_date = right.get("rightRegDate")
                     part = right.get("part")
+                    
                     if right_type:
+                        # Формируем полный текст: "Вид; № номер; от дата"
+                        right_parts = [right_type]
+                        
+                        # Добавляем долю, если есть
                         if part:
-                            rights_parts.append(f"{right_type} ({part})")
-                        else:
-                            rights_parts.append(right_type)
+                            right_parts[0] = f"{right_type} ({part})"
+                        
+                        # Добавляем номер, если есть
+                        if right_number:
+                            right_parts.append(f"№ {right_number}")
+                        
+                        # Добавляем дату, если есть (конвертируем из Unix timestamp)
+                        if right_reg_date:
+                            try:
+                                # Unix timestamp в секундах
+                                date_obj = datetime.fromtimestamp(int(right_reg_date))
+                                date_str = date_obj.strftime("%d.%m.%Y")
+                                right_parts.append(f"от {date_str}")
+                            except (ValueError, TypeError, OSError):
+                                # Если не удалось распарсить, пропускаем дату
+                                pass
+                        
+                        rights_parts.append("; ".join(right_parts))
+            
             if rights_parts:
+                # Объединяем все права через точку с запятой и пробел
                 rights_text = "; ".join(rights_parts)
         
-        # Парсим обременения
+        # Парсим обременения - формируем полный текст (вид + номер + дата)
         encumbrances_list = object_data.get("encumbrances", [])
         encumbrances_text = None
         if encumbrances_list:
@@ -404,9 +429,32 @@ class RosreestrAPIClient:
             for encum in encumbrances_list:
                 if isinstance(encum, dict):
                     encum_type = encum.get("typeDesc", "")
+                    encum_number = encum.get("rightNumber", "")
+                    encum_start_date = encum.get("startDate")
+                    
                     if encum_type:
-                        encum_parts.append(encum_type)
+                        # Формируем полный текст: "Вид; № номер; от дата"
+                        encum_text_parts = [encum_type]
+                        
+                        # Добавляем номер, если есть
+                        if encum_number:
+                            encum_text_parts.append(f"№ {encum_number}")
+                        
+                        # Добавляем дату, если есть (конвертируем из Unix timestamp)
+                        if encum_start_date:
+                            try:
+                                # Unix timestamp в секундах
+                                date_obj = datetime.fromtimestamp(int(encum_start_date))
+                                date_str = date_obj.strftime("%d.%m.%Y")
+                                encum_text_parts.append(f"от {date_str}")
+                            except (ValueError, TypeError, OSError):
+                                # Если не удалось распарсить, пропускаем дату
+                                pass
+                        
+                        encum_parts.append("; ".join(encum_text_parts))
+            
             if encum_parts:
+                # Объединяем все обременения через точку с запятой и пробел
                 encumbrances_text = "; ".join(encum_parts)
         
         # Статус объекта
@@ -429,14 +477,23 @@ class RosreestrAPIClient:
         info_update_date = object_data.get("infoUpdate", "")
         info_update_text = info_update_date if info_update_date else None
         
-        # Старый кадастровый номер
+        # Старые кадастровые номера
         old_numbers_list = object_data.get("oldNumbers", [])
         old_cadastral_number = None
         if old_numbers_list:
-            # Берем первый старый номер
-            first_old = old_numbers_list[0] if isinstance(old_numbers_list, list) else None
-            if first_old and isinstance(first_old, dict):
-                old_cadastral_number = first_old.get("numValue", "")
+            # Извлекаем все старые кадастровые номера (игнорируем инвентарные и другие типы)
+            old_cadastral_numbers = []
+            for old_num in old_numbers_list:
+                if isinstance(old_num, dict):
+                    num_type = old_num.get("numType", "")
+                    num_value = old_num.get("numValue", "")
+                    # Берем только кадастровые номера (не инвентарные и не пустые)
+                    if num_type == "Кадастровый номер" and num_value and num_value != ".":
+                        old_cadastral_numbers.append(num_value)
+            
+            # Объединяем все старые номера через точку с запятой
+            if old_cadastral_numbers:
+                old_cadastral_number = "; ".join(old_cadastral_numbers)
         
         # Дата кадастровой стоимости
         cad_cost_date = object_data.get("cadCostDate", "")

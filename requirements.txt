@@ -8,4 +8,6 @@ aiohttp==3.9.0
 playwright==1.40.0
 Pillow==10.1.0
 pytz==2024.1
+pytesseract==0.3.10
+numpy==1.26.2
 

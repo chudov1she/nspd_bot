@@ -33,39 +33,28 @@ class MapGenerator:
         self._service = None
     
     async def _init_browser(self):
-        """Инициализирует браузер Playwright."""
+        """Инициализирует браузер Playwright через общий менеджер."""
         try:
-            import platform
-            from playwright.async_api import async_playwright
-            
-            # Проверка DISPLAY на Linux (headless=False требует графический интерфейс)
-            if platform.system() == "Linux" and not os.getenv("DISPLAY"):
-                logger.warning(
-                    "⚠️ DISPLAY не установлен! Браузеру нужен графический интерфейс.\n"
-                    "Для Linux сервера используйте Xvfb:\n"
-                    "  1. Установите: sudo apt-get install -y xvfb\n"
-                    "  2. Запустите: xvfb-run -a python run.py\n"
-                    "Или настройте systemd с Xvfb (см. README)"
-                )
+            from bot.services.browser_manager import get_browser_manager
             
             if self._browser is None:
-                playwright = await async_playwright().start()
-                # Используем Chrome (рекомендуется сайтом nspd.gov.ru)
-                # headless=False - требуется графический интерфейс (Xvfb на Linux серверах)
-                self._browser = await playwright.chromium.launch(
-                    headless=False,
-                    channel="chrome"  # Используем установленный Chrome, если есть
+                # Получаем общий браузер из менеджера
+                browser_manager = await get_browser_manager()
+                self._browser = await browser_manager.get_browser()
+                
+                # Создаем свой контекст для этого сервиса
+                self._context = await browser_manager.create_context(
+                    ignore_https_errors=True,
+                    viewport={"width": 1920, "height": 1080}
                 )
-                # Создаем контекст с игнорированием SSL ошибок
-                self._context = await self._browser.new_context(
-                    ignore_https_errors=True
-                )
+                
+                # Создаем страницу в нашем контексте
                 self._page = await self._context.new_page()
-                # Устанавливаем размер окна (увеличиваем для большего масштаба карты)
-                await self._page.set_viewport_size({"width": 1920, "height": 1080})
-                # Устанавливаем масштаб страницы (zoom out для более широкого обзора)
+                
+                # Устанавливаем заголовки для русского языка
                 await self._page.set_extra_http_headers({"Accept-Language": "ru-RU,ru;q=0.9"})
-                logger.debug("Браузер Playwright (Chrome) инициализирован")
+                
+                logger.debug("Контекст и страница для MapGenerator созданы (используется общий браузер)")
                 
                 # Инициализируем обработчики
                 self._navigation = NavigationHandler(self._page)
@@ -74,35 +63,32 @@ class MapGenerator:
                 # Импортируем сервис здесь, чтобы избежать циклического импорта
                 from bot.services.map_generator.generator import MapGeneratorService
                 self._service = MapGeneratorService(self)
-        except ImportError:
+        except ImportError as e:
             raise MapGeneratorError(
-                "Playwright не установлен. Установите: pip install playwright && playwright install chromium"
+                f"Ошибка импорта: {e}. Установите: pip install playwright && playwright install chromium"
             )
         except Exception as e:
             logger.error(f"Ошибка инициализации браузера: {e}")
             raise MapGeneratorError(f"Не удалось инициализировать браузер: {str(e)}")
     
     async def close(self):
-        """Закрывает браузер и освобождает ресурсы."""
+        """Закрывает контекст и освобождает ресурсы (браузер остается открытым для других сервисов)."""
         if self._context:
             try:
                 await self._context.close()
                 self._context = None
+                logger.debug("Контекст MapGenerator закрыт")
             except Exception as e:
                 logger.warning(f"Ошибка при закрытии контекста: {e}")
         
-        if self._browser:
-            try:
-                await self._browser.close()
-                self._browser = None
-                self._page = None
-                self._navigation = None
-                self._click_handler = None
-                self._screenshot_handler = None
-                self._service = None
-                logger.debug("Браузер Playwright закрыт")
-            except Exception as e:
-                logger.warning(f"Ошибка при закрытии браузера: {e}")
+        # НЕ закрываем браузер - он общий и используется другими сервисами
+        # Браузер закроется только при закрытии BrowserManager
+        self._browser = None
+        self._page = None
+        self._navigation = None
+        self._click_handler = None
+        self._screenshot_handler = None
+        self._service = None
     
     @property
     def page(self):

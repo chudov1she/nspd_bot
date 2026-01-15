@@ -124,6 +124,9 @@ class TaskWorker:
             # Обрабатываем результаты
             await self._process_results(task, numbers, results)
             
+            # Закрываем браузер после завершения задачи, чтобы новая задача создавала новый экземпляр
+            await self._close_browser_after_task()
+            
             logger.info(f"Задача {task.id} успешно обработана")
             
         except Exception as e:
@@ -146,6 +149,10 @@ class TaskWorker:
                 f"<code>{error_msg}</code>\n\n"
                 "Обратитесь к администратору, если проблема повторяется."
             )
+        finally:
+            # Закрываем браузер после завершения задачи (успешной или с ошибкой)
+            # чтобы новая задача создавала новый экземпляр
+            await self._close_browser_after_task()
     
     async def _parse_cadastral_numbers(self, task: Task) -> List[str]:
         """Парсит кадастровые номера из задачи."""
@@ -244,6 +251,432 @@ class TaskWorker:
                     error=str(e),
                     error_code="API_ERROR"
                 ))
+        
+        return results
+    
+    async def _close_browser_after_task(self):
+        """
+        Закрывает браузер после завершения задачи.
+        Это позволяет новой задаче создать новый экземпляр браузера.
+        """
+        try:
+            from bot.services.browser_manager import close_browser_manager
+            from bot.services.map_generator import get_map_generator
+            from bot.services.rosreestr_lk import get_lk_client
+            
+            logger.debug("Закрытие браузера после завершения задачи...")
+            
+            # Закрываем контексты сервисов (если они открыты)
+            try:
+                map_generator = get_map_generator()
+                if map_generator._context is not None:
+                    await map_generator.close()
+                    logger.debug("Контекст MapGenerator закрыт")
+            except Exception as e:
+                logger.debug(f"Ошибка при закрытии MapGenerator: {e}")
+            
+            try:
+                lk_client = get_lk_client()
+                if lk_client._context is not None:
+                    await lk_client.close()
+                    logger.debug("Контекст RosreestrLKClient закрыт")
+            except Exception as e:
+                logger.debug(f"Ошибка при закрытии RosreestrLKClient: {e}")
+            
+            # Закрываем общий браузер (это также сбросит singleton)
+            await close_browser_manager()
+            logger.info("Браузер закрыт после завершения задачи, новая задача создаст новый экземпляр")
+            
+        except Exception as e:
+            logger.warning(f"Ошибка при закрытии браузера после задачи: {e}")
+    
+    def _parse_rights_data(self, rights_data: List[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Парсит данные о правах и ограничениях из личного кабинета.
+        
+        Args:
+            rights_data: Список словарей с данными о правах и ограничениях
+        
+        Returns:
+            Кортеж (передаваемые права, правообладатель, обременения)
+            - передаваемые права: полная информация о виде права (вид + номер + дата)
+            - правообладатель: ФИО или название организации (если есть в данных)
+            - обременения: полная информация об обременениях (вид + номер + дата)
+        """
+        rights = None
+        owner = None
+        encumbrances = None
+        
+        # Детальное логирование для отладки
+        logger.info(f"Парсинг данных о правах: {len(rights_data)} записей")
+        for idx, item in enumerate(rights_data):
+            name = item.get('name', '')
+            name_lower = name.lower()
+            values = item.get('values', [])
+            
+            logger.info(f"  Запись {idx + 1}: name='{name}', values={values}")
+            
+            if not values:
+                logger.warning(f"  Запись {idx + 1}: пропущена (нет значений)")
+                continue
+            
+            # Ищем информацию о праве через "Вид, номер и дата государственной регистрации права"
+            # Это должно идти в колонку "Передаваемые права" (self.rights)
+            # Проверяем различные варианты названия (более гибкое условие)
+            # Название может быть: "Вид, номер и дата государственной регистрации права"
+            # Или просто содержать ключевые слова
+            if 'вид' in name_lower:
+                # Если есть "вид" и (есть "регистрация" или "право" или "государственной" или ("номер" и "дата"))
+                if 'регистрация' in name_lower or 'право' in name_lower or \
+                   'государственной' in name_lower or ('номер' in name_lower and 'дата' in name_lower):
+                    # Объединяем все значения (вид права + номер + дата)
+                    rights = '; '.join(values)
+                    logger.info(f"  ✅ Запись {idx + 1}: найдены права из '{name}': '{rights}'")
+                else:
+                    logger.warning(f"  ⚠️ Запись {idx + 1}: содержит 'вид', но не подходит под условие: '{name}'")
+            else:
+                # Если нет "вид", но есть другие ключевые слова - тоже может быть информация о праве
+                if ('номер' in name_lower and 'дата' in name_lower and 'регистрация' in name_lower) or \
+                   ('государственной' in name_lower and 'регистрация' in name_lower):
+                    rights = '; '.join(values)
+                    logger.info(f"  ✅ Запись {idx + 1}: найдены права (альтернативное условие) из '{name}': '{rights}'")
+            
+            # Ищем обременения через "Ограничение прав и обременение объекта недвижимости"
+            # Это должно идти в колонку "Обременения (ограничения)" (self.encumbrances)
+            if 'обременение' in name_lower or 'ограничение' in name_lower:
+                # Объединяем все значения (вид обременения + номер + дата)
+                encumbrances = '; '.join(values)
+                logger.info(f"  ✅ Запись {idx + 1}: найдены обременения из '{name}': '{encumbrances}'")
+            
+            # Правообладатель (ФИО или название организации) обычно не содержится
+            # в разделе "Сведения о правах и ограничениях", поэтому оставляем None
+            # Если в будущем появятся данные о конкретном правообладателе, их можно
+            # извлечь здесь по соответствующему ключу
+        
+        logger.info(f"Результат парсинга: rights='{rights}', owner='{owner}', encumbrances='{encumbrances}'")
+        return rights, owner, encumbrances
+    
+    async def _enrich_data_from_lk(
+        self,
+        results: List[RealEstateObject],
+        task_id: int
+    ) -> List[RealEstateObject]:
+        """
+        Дополняет данные объектов информацией из личного кабинета Росреестра.
+        
+        Args:
+            results: Список объектов с данными из API
+            task_id: ID задачи для логирования
+        
+        Returns:
+            Обновлённый список объектов
+        """
+        from bot.services.rosreestr_lk import get_lk_client
+        
+        # Фильтруем объекты, которые нужно дополнить
+        # ПРИОРИТЕТ: Сначала используем детальные данные из API (если есть номера и даты)
+        # Только если данных из API нет или они неполные (без номеров и дат) - обращаемся к ЛК
+        objects_to_enrich = []
+        
+        for obj in results:
+            if obj.has_error():
+                continue
+            
+            # Проверяем, есть ли детальные данные из API
+            # Детальные данные содержат "№" (номер) и "от" (дата)
+            has_detailed_rights = obj.rights and "№" in obj.rights and "от" in obj.rights
+            has_detailed_encumbrances = obj.encumbrances and "№" in obj.encumbrances and "от" in obj.encumbrances
+            
+            # Если нет детальных данных по правам или обременениям - добавляем в список для дополнения
+            if not has_detailed_rights or not has_detailed_encumbrances:
+                objects_to_enrich.append(obj)
+                logger.debug(
+                    f"[Задача {task_id}] Объект {obj.cadastral_number} требует дополнения из ЛК: "
+                    f"rights детальные={has_detailed_rights} (значение: '{obj.rights}'), "
+                    f"encumbrances детальные={has_detailed_encumbrances} (значение: '{obj.encumbrances}')"
+                )
+            else:
+                logger.debug(
+                    f"[Задача {task_id}] Объект {obj.cadastral_number} имеет детальные данные из API, "
+                    f"дополнение из ЛК не требуется. rights: '{obj.rights}', encumbrances: '{obj.encumbrances}'"
+                )
+        
+        # Логируем, какие объекты будут дополнены
+        logger.info(
+            f"[Задача {task_id}] Объекты для дополнения из ЛК: {len(objects_to_enrich)} из {len([r for r in results if not r.has_error()])}. "
+            f"Текущие значения rights (первые 3): "
+            f"{[f'{obj.cadastral_number}: {obj.rights[:50] if obj.rights else None}...' for obj in objects_to_enrich[:3]]}"
+        )
+        
+        if not objects_to_enrich:
+            logger.info(f"[Задача {task_id}] Нет объектов для дополнения из ЛК")
+            return results
+        
+        logger.info(f"[Задача {task_id}] Дополнение данных из ЛК для {len(objects_to_enrich)} объектов")
+        
+        # Получаем глобальный экземпляр клиента
+        lk_client = get_lk_client()
+        
+        try:
+            # Инициализируем браузер если нужно
+            if lk_client._browser is None:
+                await lk_client.open_lk_page()
+                await lk_client.scroll_to_form()
+            
+            # Обрабатываем каждый объект
+            for idx, obj in enumerate(objects_to_enrich, 1):
+                max_retries = 3
+                retry_count = 0
+                success = False
+                
+                while retry_count < max_retries and not success:
+                    try:
+                        logger.info(
+                            f"[Задача {task_id}] Дополнение {idx}/{len(objects_to_enrich)}: "
+                            f"{obj.cadastral_number} (попытка {retry_count + 1}/{max_retries})"
+                        )
+                        
+                        # Проверяем, что браузер еще работает
+                        try:
+                            if lk_client._page is None:
+                                raise Exception("Страница не инициализирована")
+                            # Пробуем получить URL для проверки доступности
+                            _ = lk_client._page.url
+                        except Exception as browser_error:
+                            logger.warning(
+                                f"[Задача {task_id}] Браузер недоступен, перезапускаем: {browser_error}"
+                            )
+                            if not await lk_client.restart_browser():
+                                raise Exception("Не удалось перезапустить браузер")
+                            await lk_client.open_lk_page()
+                            await lk_client.scroll_to_form()
+                        
+                        # Сначала заполняем кадастровый номер
+                        await lk_client.fill_cadastral_number(obj.cadastral_number)
+                        
+                        # Теперь работаем с капчей (до 5 попыток)
+                        captcha_attempts = 0
+                        max_captcha_attempts = 5
+                        captcha_success = False
+                        
+                        while captcha_attempts < max_captcha_attempts and not captcha_success:
+                            captcha_attempts += 1
+                            
+                            # Получаем и распознаем капчу
+                            captcha_path, captcha_text = await lk_client.get_and_recognize_captcha()
+                            
+                            if not captcha_text:
+                                logger.warning(
+                                    f"[Задача {task_id}] Не удалось распознать капчу для {obj.cadastral_number} "
+                                    f"(попытка {captcha_attempts}/{max_captcha_attempts})"
+                                )
+                                if captcha_attempts < max_captcha_attempts:
+                                    # Обновляем капчу и пробуем снова
+                                    await lk_client.reload_captcha()
+                                    await asyncio.sleep(1)
+                                continue
+                            
+                            # Заполняем капчу
+                            await lk_client.fill_captcha(captcha_text)
+                            await lk_client._page.wait_for_timeout(500)  # Небольшая задержка после ввода капчи
+                            
+                            # Пробуем кликнуть по кнопке поиска
+                            search_button_clicked = await lk_client.click_search_button()
+                            
+                            if not search_button_clicked:
+                                # Кнопка не найдена - проверяем ошибку капчи
+                                await lk_client._page.wait_for_timeout(1000)  # Ждем проверки капчи на сервере
+                                has_captcha_error = await lk_client.check_captcha_error()
+                                
+                                if has_captcha_error:
+                                    logger.warning(
+                                        f"[Задача {task_id}] Ошибка капчи для {obj.cadastral_number} "
+                                        f"(попытка {captcha_attempts}/{max_captcha_attempts})"
+                                    )
+                                    if captcha_attempts < max_captcha_attempts:
+                                        # Обновляем капчу и пробуем снова
+                                        await lk_client.reload_captcha()
+                                        await lk_client._page.wait_for_timeout(1000)
+                                    continue
+                                else:
+                                    # Кнопка не найдена, но ошибки капчи нет - другая проблема
+                                    logger.warning(
+                                        f"[Задача {task_id}] Кнопка поиска не найдена для {obj.cadastral_number}"
+                                    )
+                                    retry_count += 1
+                                    if retry_count < max_retries:
+                                        await lk_client.navigate_to_search_page()
+                                        await asyncio.sleep(2)
+                                    break
+                            
+                            # Проверяем ошибку капчи после клика
+                            await lk_client._page.wait_for_timeout(1000)  # Ждем проверки капчи на сервере
+                            has_captcha_error = await lk_client.check_captcha_error()
+                            
+                            if has_captcha_error:
+                                logger.warning(
+                                    f"[Задача {task_id}] Ошибка капчи для {obj.cadastral_number} "
+                                    f"(попытка {captcha_attempts}/{max_captcha_attempts})"
+                                )
+                                if captcha_attempts < max_captcha_attempts:
+                                    # Обновляем капчу и пробуем снова
+                                    await lk_client.reload_captcha()
+                                    await asyncio.sleep(1)
+                                continue
+                            
+                            # Капча введена правильно, проверяем результаты
+                            captcha_success = True
+                        
+                        if not captcha_success:
+                            logger.error(
+                                f"[Задача {task_id}] Не удалось ввести капчу для {obj.cadastral_number} "
+                                f"после {max_captcha_attempts} попыток"
+                            )
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                await lk_client.navigate_to_search_page()
+                                await asyncio.sleep(2)
+                            continue
+                        
+                        # Ждем результатов
+                        if not await lk_client.wait_for_search_results():
+                            logger.warning(
+                                f"[Задача {task_id}] Результаты не найдены для {obj.cadastral_number}"
+                            )
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                await lk_client.navigate_to_search_page()
+                                await asyncio.sleep(2)
+                            continue
+                        
+                        # Кликаем по первой ссылке
+                        if not await lk_client.click_first_result():
+                            logger.warning(
+                                f"[Задача {task_id}] Ссылка не найдена для {obj.cadastral_number}"
+                            )
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                await lk_client.navigate_to_search_page()
+                                await asyncio.sleep(2)
+                            continue
+                        
+                        # Ждем карточки
+                        if not await lk_client.wait_for_object_card():
+                            logger.warning(
+                                f"[Задача {task_id}] Карточка не загрузилась для {obj.cadastral_number}"
+                            )
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                await lk_client.navigate_to_search_page()
+                                await asyncio.sleep(2)
+                            continue
+                        
+                        # Извлекаем данные
+                        rights_data = await lk_client.extract_rights_and_restrictions()
+                        
+                        logger.debug(
+                            f"[Задача {task_id}] Извлеченные данные из ЛК для {obj.cadastral_number}: {rights_data}"
+                        )
+                        
+                        if rights_data:
+                            # Парсим данные и заполняем поля
+                            rights, owner, encumbrances = self._parse_rights_data(rights_data)
+                            
+                            logger.debug(
+                                f"[Задача {task_id}] Распарсенные данные для {obj.cadastral_number}: "
+                                f"rights='{rights}', owner='{owner}', encumbrances='{encumbrances}'"
+                            )
+                            
+                            # Заполняем передаваемые права (полная информация о виде права)
+                            # ВАЖНО: Данные из ЛК перезаписывают данные из API, так как они более полные
+                            if rights:
+                                old_rights = obj.rights
+                                obj.rights = rights
+                                logger.info(
+                                    f"[Задача {task_id}] ✅ Обновлено поле rights для {obj.cadastral_number}: "
+                                    f"было: '{old_rights}', стало: '{obj.rights}'"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[Задача {task_id}] ⚠️ Права из ЛК не найдены для {obj.cadastral_number}. "
+                                    f"Текущее значение из API: '{obj.rights}'"
+                                )
+                            
+                            # Заполняем правообладателя (если есть конкретные данные)
+                            if owner:
+                                obj.owner = owner
+                                logger.debug(
+                                    f"[Задача {task_id}] Обновлено поле owner для {obj.cadastral_number}: "
+                                    f"'{obj.owner}'"
+                                )
+                            
+                            # Заполняем обременения (полная информация об обременениях)
+                            # ВАЖНО: Данные из ЛК перезаписывают данные из API
+                            if encumbrances:
+                                obj.encumbrances = encumbrances
+                                logger.debug(
+                                    f"[Задача {task_id}] Обновлено поле encumbrances для {obj.cadastral_number}: "
+                                    f"'{obj.encumbrances}'"
+                                )
+                            
+                            logger.info(
+                                f"[Задача {task_id}] Данные дополнены для {obj.cadastral_number}: "
+                                f"rights={bool(rights)} (значение: '{rights[:50] if rights else None}...'), "
+                                f"owner={bool(owner)}, encumbrances={bool(encumbrances)}"
+                            )
+                            success = True
+                        else:
+                            logger.warning(
+                                f"[Задача {task_id}] Данные о правах не найдены для {obj.cadastral_number}"
+                            )
+                            success = True  # Считаем успешным, даже если данных нет
+                        
+                        # Возвращаемся на страницу поиска для следующего объекта
+                        await lk_client.navigate_to_search_page()
+                        
+                    except Exception as e:
+                        retry_count += 1
+                        logger.error(
+                            f"[Задача {task_id}] Ошибка при дополнении {obj.cadastral_number} "
+                            f"(попытка {retry_count}/{max_retries}): {e}"
+                        )
+                        
+                        if retry_count < max_retries:
+                            # Пытаемся перезапустить браузер при критических ошибках
+                            if "timeout" in str(e).lower() or "navigation" in str(e).lower():
+                                logger.info(f"[Задача {task_id}] Перезапуск браузера из-за ошибки: {e}")
+                                try:
+                                    await lk_client.restart_browser()
+                                    await lk_client.open_lk_page()
+                                    await lk_client.scroll_to_form()
+                                except Exception as restart_error:
+                                    logger.error(
+                                        f"[Задача {task_id}] Не удалось перезапустить браузер: {restart_error}"
+                                    )
+                            else:
+                                # Для других ошибок просто возвращаемся на страницу поиска
+                                try:
+                                    await lk_client.navigate_to_search_page()
+                                except:
+                                    pass
+                            
+                            await asyncio.sleep(3)  # Задержка перед повтором
+                        else:
+                            # Все попытки исчерпаны
+                            logger.error(
+                                f"[Задача {task_id}] Не удалось дополнить данные для {obj.cadastral_number} "
+                                f"после {max_retries} попыток"
+                            )
+                
+                # Небольшая задержка между объектами
+                if idx < len(objects_to_enrich):
+                    await asyncio.sleep(1)
+            
+            logger.info(f"[Задача {task_id}] Дополнение данных из ЛК завершено")
+            
+        except Exception as e:
+            logger.error(f"[Задача {task_id}] Критическая ошибка при дополнении из ЛК: {e}", exc_info=True)
+            # Возвращаем исходные результаты без дополнения
         
         return results
     
@@ -469,6 +902,9 @@ class TaskWorker:
         results: List[RealEstateObject]
     ):
         """Обрабатывает результаты и отправляет файл пользователю."""
+        # Дополняем данные из личного кабинета Росреестра (если нужно)
+        results = await self._enrich_data_from_lk(results, task.id)
+        
         # Создаем задачи генерации карт в БД для земельных участков
         await self._create_map_tasks_for_land_plots(task, results)
         

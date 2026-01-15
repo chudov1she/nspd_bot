@@ -14,6 +14,8 @@ from bot.handlers import register_handlers
 from bot.database.base import init_db, close_db
 from bot.services.api_client import close_api_client
 from bot.services.map_generator import close_map_generator
+from bot.services.rosreestr_lk import close_lk_client
+from bot.services.browser_manager import close_browser_manager
 from bot.services.worker import get_task_worker
 
 
@@ -102,11 +104,24 @@ async def main() -> None:
         except Exception as e:
             logger.debug(f"Ошибка при закрытии API клиента: {e}")
         
-        # Закрываем генератор карт
+        # Закрываем генератор карт (закрывает только свой контекст, браузер остается)
         try:
             await close_map_generator()
         except Exception as e:
             logger.debug(f"Ошибка при закрытии генератора карт: {e}")
+        
+        # Закрываем клиент личного кабинета Росреестра (закрывает только свой контекст, браузер остается)
+        try:
+            await close_lk_client()
+        except Exception as e:
+            logger.debug(f"Ошибка при закрытии клиента ЛК: {e}")
+        
+        # Закрываем общий менеджер браузера (последним, так как он используется другими сервисами)
+        # Это закроет общий браузер для всех сервисов
+        try:
+            await close_browser_manager()
+        except Exception as e:
+            logger.debug(f"Ошибка при закрытии менеджера браузера: {e}")
         
         logger.info("👋 Бот успешно остановлен")
 
