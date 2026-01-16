@@ -78,7 +78,7 @@ class RealEstateObject:
             "Кадастровая стоимость": cost_str,
             "Передаваемые права": self.rights or "",
             "Правообладатель (собственник)": self.owner or "",
-            "Обременения (ограничения)": self.encumbrances or "",
+            "Обременения (ограничения)": self.encumbrances or "Отсутствуют",
             "Этаж": self.level or "",
             "Статус объекта": self.status or "",
             "Назначение": self.purpose or "",
